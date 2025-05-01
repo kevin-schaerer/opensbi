@@ -114,7 +114,7 @@ static int ntl_hive_s_timer_init(void)
 /*
  * NTL Hive-S descriptor.
  */
-const struct sbi_ntl_hive_soperations ntl_hive_sops = {
+const struct sbi_platform_operations ntl_hive_sops = {
 	.early_init		= ntl_hive_s_early_init,
 	.final_init		= ntl_hive_s_final_init,
 	.irqchip_init	= ntl_hive_s_irqchip_init,
