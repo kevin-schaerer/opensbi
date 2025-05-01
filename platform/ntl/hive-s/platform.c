@@ -78,7 +78,7 @@ static int ntl_hive_s_final_init(bool cold_boot)
 	if (!cold_boot)
 		return 0;
 
-	fdt = fdt_get_address();
+	fdt = fdt_get_address_rw();
 	fdt_fixups(fdt);
 
 	return 0;
@@ -124,7 +124,7 @@ const struct sbi_platform_operations ntl_hive_sops = {
 
 const struct sbi_platform platform = {
 	.opensbi_version	= OPENSBI_VERSION,
-	.platform_version	= SBI_NTL_HIVE_S_VERSION(0x0, 0x01),
+	.platform_version	= SBI_PLATFORM_VERSION(0x0, 0x01),
 	.name				= "NTL Hive-S",
 	.features			= SBI_NTL_HIVE_S_DEFAULT_FEATURES,
 	.hart_count			= NTL_HIVE_S_HART_COUNT,
