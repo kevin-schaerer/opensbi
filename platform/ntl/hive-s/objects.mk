@@ -70,7 +70,7 @@ FW_JUMP=y
 # You can use fixed address for jump firmware as an alternative option.
 # SBI will prefer "<X>_ADDR" if both "<X>_ADDR" and "<X>_OFFSET" are
 # defined
-FW_JUMP_ADDR=0x40000000
+FW_JUMP_ADDR=0x40040000
 FW_JUMP_FDT_ADDR=0x40EF0000
 
 #
