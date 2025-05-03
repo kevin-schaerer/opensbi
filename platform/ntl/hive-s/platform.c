@@ -62,12 +62,10 @@ static struct aclint_mtimer_data mtimer = {
  */
 static int ntl_hive_s_early_init(bool cold_boot)
 {
-	litex_uart_init(NTL_HIVE_S_UART_ADDR);
-
 	if (!cold_boot)
 		return 0;
 
-	return 0;
+	return litex_uart_init(NTL_HIVE_S_UART_ADDR);
 }
 
 /*

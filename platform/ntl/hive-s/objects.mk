@@ -23,8 +23,14 @@ platform-ldflags-y =
 #
 PLATFORM_RISCV_XLEN = 32
 PLATFORM_RISCV_ABI = ilp32
-PLATFORM_RISCV_ISA = rv32imac_zicsr_zifencei
-PLATFORM_RISCV_CODE_MODEL = medany
+#PLATFORM_RISCV_ISA = rv32imac_zicsr_zifencei
+#PLATFORM_RISCV_CODE_MODEL = medany
+
+ifeq ($(CC_SUPPORT_ZICSR_ZIFENCEI), y)
+	PLATFORM_RISCV_ISA = rv$(PLATFORM_RISCV_XLEN)imac_zicsr_zifencei
+else
+	PLATFORM_RISCV_ISA = rv$(PLATFORM_RISCV_XLEN)imac
+endif
 
 # Space separated list of object file names to be compiled for the platform
 platform-objs-y += platform.o
