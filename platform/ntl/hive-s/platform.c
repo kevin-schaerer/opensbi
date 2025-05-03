@@ -20,6 +20,8 @@
 #include <sbi_utils/timer/aclint_mtimer.h>
 
 #define NTL_HIVE_S_PLIC_ADDR		0xf0c00000
+#define NTL_HIVE_S_PLIC_SIZE			(0x200000 + \
+	(NTL_HIVE_S_HART_COUNT * 0x1000))
 #define NTL_HIVE_S_PLIC_NUM_SOURCES	4
 #define NTL_HIVE_S_HART_COUNT		8
 #define NTL_HIVE_S_CLINT_ADDR		0xF0010000
@@ -34,6 +36,7 @@
 
 static struct plic_data plic = {
 	.addr = NTL_HIVE_S_PLIC_ADDR,
+	.size = NTL_HIVE_S_PLIC_SIZE,
 	.num_src = NTL_HIVE_S_PLIC_NUM_SOURCES,
 };
 
