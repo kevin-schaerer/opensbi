@@ -35,6 +35,8 @@ endif
 # Space separated list of object file names to be compiled for the platform
 platform-objs-y += platform.o
 
+platform-runcmd = echo "NTL Hive-S"
+
 FW_TEXT_START=0x40F00000
 
 FW_DYNAMIC=n
