@@ -91,16 +91,7 @@ static int ntl_hive_s_final_init(bool cold_boot)
  */
 static int ntl_hive_s_irqchip_init(void)
 {
-	int rc;
-	u32 hartid = current_hartid();
-
-	if (cold_boot) {
-		rc = plic_cold_irqchip_init(&plic);
-		if (rc)
-			return rc;
-	}
-
-	return plic_warm_irqchip_init(&plic, hartid * 2, hartid * 2 + 1);
+	return plic_cold_irqchip_init(&plic);
 }
 
 /*
@@ -108,15 +99,7 @@ static int ntl_hive_s_irqchip_init(void)
  */
 static int ntl_hive_s_ipi_init(void)
 {
-	int rc;
-
-	if (cold_boot) {
-		rc = aclint_mswi_cold_init(&mswi);
-		if (rc)
-			return rc;
-	}
-
-	return aclint_mswi_warm_init();
+	return aclint_mswi_cold_init(&mswi);
 }
 
 /*
@@ -124,14 +107,7 @@ static int ntl_hive_s_ipi_init(void)
  */
 static int ntl_hive_s_timer_init(void)
 {
-	int rc;
-	if (cold_boot) {
-		rc = aclint_mtimer_cold_init(&mtimer, NULL); /* Timer has no reference */
-		if (rc)
-			return rc;
-	}
-
-	return aclint_mtimer_warm_init();
+	return aclint_mtimer_cold_init(&mtimer, NULL);
 }
 
 /*
