@@ -21,8 +21,8 @@ platform-ldflags-y =
 # These are optional parameters but platforms can optionaly provide it.
 # Some of these are guessed based on GCC compiler capabilities
 #
-PLATFORM_RISCV_XLEN = 32
-PLATFORM_RISCV_ABI = ilp32
+#PLATFORM_RISCV_XLEN = 32
+#PLATFORM_RISCV_ABI = ilp32
 #PLATFORM_RISCV_ISA = rv32imac_zicsr_zifencei
 #PLATFORM_RISCV_CODE_MODEL = medany
 
