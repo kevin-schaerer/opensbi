@@ -17,12 +17,6 @@ platform-asflags-y =
 platform-ldflags-y =
 
 #
-# Command for platform specific "make run"
-# Useful for development and debugging on plaftform simulator (such as QEMU)
-#
-# platform-runcmd = your_platform_run.sh
-
-#
 # Platform RISC-V XLEN, ABI, ISA and Code Model configuration.
 # These are optional parameters but platforms can optionaly provide it.
 # Some of these are guessed based on GCC compiler capabilities
@@ -45,48 +39,10 @@ platform-objs-y += platform.o
 # Optional parameter for path to external FDT
 # FW_FDT_PATH="path to platform flattened device tree file"
 
-#
-# Dynamic firmware configuration.
-# Optional parameters are commented out. Uncomment and define these parameters
-# as needed.
-#
-FW_DYNAMIC=y
+FW_DYNAMIC=n
 
-#
-# Jump firmware configuration.
-# Optional parameters are commented out. Uncomment and define these parameters
-# as needed.
-#
 FW_JUMP=y
-# This needs to be 4MB aligned for 32-bit support
-# This needs to be 2MB aligned for 64-bit support
-# ifeq ($(PLATFORM_RISCV_XLEN), 32)
-# FW_JUMP_OFFSET=0x400000
-# else
-# FW_JUMP_OFFSET=0x200000
-# endif
-# FW_JUMP_FDT_OFFSET=0x2200000
-#
-# You can use fixed address for jump firmware as an alternative option.
-# SBI will prefer "<X>_ADDR" if both "<X>_ADDR" and "<X>_OFFSET" are
-# defined
 FW_JUMP_ADDR=0x40040000
 FW_JUMP_FDT_ADDR=0x40EF0000
 
-#
-# Firmware with payload configuration.
-# Optional parameters are commented out. Uncomment and define these parameters
-# as needed.
-#
-FW_PAYLOAD=y
-# This needs to be 4MB aligned for 32-bit support
-# This needs to be 2MB aligned for 64-bit support
-FW_PAYLOAD_OFFSET=0x40000000
-# FW_PAYLOAD_ALIGN=0x1000
-# FW_PAYLOAD_PATH="path to next boot stage binary image file"
-# FW_PAYLOAD_FDT_OFFSET=0x2200000
-#
-# You can use fixed address for payload firmware as an alternative option.
-# SBI will prefer "FW_PAYLOAD_FDT_ADDR" if both "FW_PAYLOAD_FDT_OFFSET"
-# and "FW_PAYLOAD_FDT_ADDR" are defined.
-FW_PAYLOAD_FDT_ADDR=0x40EF0000
+FW_PAYLOAD=n
