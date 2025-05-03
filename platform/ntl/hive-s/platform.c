@@ -62,10 +62,12 @@ static struct aclint_mtimer_data mtimer = {
  */
 static int ntl_hive_s_early_init(bool cold_boot)
 {
+	litex_uart_init(NTL_HIVE_S_UART_ADDR);
+
 	if (!cold_boot)
 		return 0;
 
-	return litex_uart_init(NTL_HIVE_S_UART_ADDR);
+	return 0;
 }
 
 /*
@@ -89,8 +91,16 @@ static int ntl_hive_s_final_init(bool cold_boot)
  */
 static int ntl_hive_s_irqchip_init(void)
 {
-	/* Example if the generic PLIC driver is used */
-	return plic_cold_irqchip_init(&plic);
+	int rc;
+	u32 hartid = current_hartid();
+
+	if (cold_boot) {
+		rc = plic_cold_irqchip_init(&plic);
+		if (rc)
+			return rc;
+	}
+
+	return plic_warm_irqchip_init(&plic, hartid * 2, hartid * 2 + 1);
 }
 
 /*
@@ -98,8 +108,15 @@ static int ntl_hive_s_irqchip_init(void)
  */
 static int ntl_hive_s_ipi_init(void)
 {
-	/* Example if the generic ACLINT driver is used */
-	return aclint_mswi_cold_init(&mswi);
+	int rc;
+
+	if (cold_boot) {
+		rc = aclint_mswi_cold_init(&mswi);
+		if (rc)
+			return rc;
+	}
+
+	return aclint_mswi_warm_init();
 }
 
 /*
@@ -107,8 +124,14 @@ static int ntl_hive_s_ipi_init(void)
  */
 static int ntl_hive_s_timer_init(void)
 {
-	/* Example if the generic ACLINT driver is used */
-	return aclint_mtimer_cold_init(&mtimer, NULL);
+	int rc;
+	if (cold_boot) {
+		rc = aclint_mtimer_cold_init(&mtimer, NULL); /* Timer has no reference */
+		if (rc)
+			return rc;
+	}
+
+	return aclint_mtimer_warm_init();
 }
 
 /*
