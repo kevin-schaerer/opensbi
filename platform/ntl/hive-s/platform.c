@@ -38,6 +38,9 @@ static struct plic_data plic = {
 	.addr = NTL_HIVE_S_PLIC_ADDR,
 	.size = NTL_HIVE_S_PLIC_SIZE,
 	.num_src = NTL_HIVE_S_PLIC_NUM_SOURCES,
+	.context_map = {
+		[0] = { 0, -1 },
+	},
 };
 
 static struct aclint_mswi_data mswi = {
