@@ -114,6 +114,12 @@ static int ntl_hive_s_timer_init(void)
 	return aclint_mtimer_cold_init(&mtimer, NULL);
 }
 
+static bool ntl_hive_s_cold_boot_allowed(u32 hartid,
+	const struct fdt_match *match)
+{
+return (0 == hartid);
+}
+
 /*
  * NTL Hive-S descriptor.
  */
@@ -122,7 +128,8 @@ const struct sbi_platform_operations ntl_hive_sops = {
 	.final_init		= ntl_hive_s_final_init,
 	.irqchip_init	= ntl_hive_s_irqchip_init,
 	.ipi_init		= ntl_hive_s_ipi_init,
-	.timer_init		= ntl_hive_s_timer_init
+	.timer_init		= ntl_hive_s_timer_init,
+	.cold_boot_allowed = ntl_hive_s_cold_boot_allowed,
 };
 
 const struct sbi_platform platform = {
