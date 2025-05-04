@@ -114,10 +114,9 @@ static int ntl_hive_s_timer_init(void)
 	return aclint_mtimer_cold_init(&mtimer, NULL);
 }
 
-static bool ntl_hive_s_cold_boot_allowed(u32 hartid,
-	const struct fdt_match *match)
+static bool ntl_hive_s_cold_boot_allowed(u32 hartid)
 {
-return (0 == hartid);
+	return (0 == hartid);
 }
 
 /*
