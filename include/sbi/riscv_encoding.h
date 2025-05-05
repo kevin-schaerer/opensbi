@@ -32,7 +32,8 @@
 #define MSTATUS_TVM			_UL(0x00100000)
 #define MSTATUS_TW			_UL(0x00200000)
 #define MSTATUS_TSR			_UL(0x00400000)
-#define MSTATUS_SPELP		_UL(0x00800000)
+#define MSTATUS_SPELP			_UL(0x00800000)
+#define MSTATUS_SDT			_UL(0x01000000)
 #define MSTATUS32_SD			_UL(0x80000000)
 #if __riscv_xlen == 64
 #define MSTATUS_UXL			_ULL(0x0000000300000000)
@@ -84,6 +85,8 @@
 #define HSTATUS_SPV			_UL(0x00000080)
 #define HSTATUS_GVA			_UL(0x00000040)
 #define HSTATUS_VSBE			_UL(0x00000020)
+
+#define MTVEC_MODE			_UL(0x00000003)
 
 #define MCAUSE_IRQ_MASK			(_UL(1) << (__riscv_xlen - 1))
 
@@ -374,6 +377,17 @@
 #define CSR_SSTATEEN1			0x10D
 #define CSR_SSTATEEN2			0x10E
 #define CSR_SSTATEEN3			0x10F
+
+/* Machine-Level Control transfer records CSRs */
+#define CSR_MCTRCTL                     0x34e
+
+/* Supervisor-Level Control transfer records CSRs */
+#define CSR_SCTRCTL                     0x14e
+#define CSR_SCTRSTATUS                  0x14f
+#define CSR_SCTRDEPTH                   0x15f
+
+/* VS-Level Control transfer records CSRs */
+#define CSR_VSCTRCTL                    0x24e
 
 /* ===== Hypervisor-level CSRs ===== */
 
@@ -799,6 +813,8 @@
 #define SMSTATEEN0_CS			(_ULL(1) << SMSTATEEN0_CS_SHIFT)
 #define SMSTATEEN0_FCSR_SHIFT		1
 #define SMSTATEEN0_FCSR			(_ULL(1) << SMSTATEEN0_FCSR_SHIFT)
+#define SMSTATEEN0_CTR_SHIFT		54
+#define SMSTATEEN0_CTR			(_ULL(1) << SMSTATEEN0_CTR_SHIFT)
 #define SMSTATEEN0_CONTEXT_SHIFT	57
 #define SMSTATEEN0_CONTEXT		(_ULL(1) << SMSTATEEN0_CONTEXT_SHIFT)
 #define SMSTATEEN0_IMSIC_SHIFT		58

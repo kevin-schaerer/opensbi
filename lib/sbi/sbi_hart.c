@@ -85,11 +85,11 @@ static void mstatus_init(struct sbi_scratch *scratch)
 #endif
 	}
 
+	if (misa_extension('H'))
+		csr_write(CSR_HSTATUS, 0);
+
 	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SMSTATEEN)) {
-		mstateen_val = csr_read(CSR_MSTATEEN0);
-#if __riscv_xlen == 32
-		mstateen_val |= ((uint64_t)csr_read(CSR_MSTATEEN0H)) << 32;
-#endif
+		mstateen_val = 0;
 		mstateen_val |= SMSTATEEN_STATEN;
 		mstateen_val |= SMSTATEEN0_CONTEXT;
 		mstateen_val |= SMSTATEEN0_HSENVCFG;
@@ -105,17 +105,34 @@ static void mstatus_init(struct sbi_scratch *scratch)
 		else
 			mstateen_val &= ~(SMSTATEEN0_SVSLCT);
 
-		csr_write(CSR_MSTATEEN0, mstateen_val);
-#if __riscv_xlen == 32
-		csr_write(CSR_MSTATEEN0H, mstateen_val >> 32);
-#endif
+		if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SSCTR))
+			mstateen_val |= SMSTATEEN0_CTR;
+		else
+			mstateen_val &= ~SMSTATEEN0_CTR;
+
+		csr_write64(CSR_MSTATEEN0, mstateen_val);
+		csr_write64(CSR_MSTATEEN1, SMSTATEEN_STATEN);
+		csr_write64(CSR_MSTATEEN2, SMSTATEEN_STATEN);
+		csr_write64(CSR_MSTATEEN3, SMSTATEEN_STATEN);
+	}
+
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SSSTATEEN)) {
+		if (misa_extension('S')) {
+			csr_write(CSR_SSTATEEN0, 0);
+			csr_write(CSR_SSTATEEN1, 0);
+			csr_write(CSR_SSTATEEN2, 0);
+			csr_write(CSR_SSTATEEN3, 0);
+		}
+		if (misa_extension('H')) {
+			csr_write64(CSR_HSTATEEN0, (uint64_t)0);
+			csr_write64(CSR_HSTATEEN1, (uint64_t)0);
+			csr_write64(CSR_HSTATEEN2, (uint64_t)0);
+			csr_write64(CSR_HSTATEEN3, (uint64_t)0);
+		}
 	}
 
 	if (sbi_hart_priv_version(scratch) >= SBI_HART_PRIV_VER_1_12) {
-		menvcfg_val = csr_read(CSR_MENVCFG);
-#if __riscv_xlen == 32
-		menvcfg_val |= ((uint64_t)csr_read(CSR_MENVCFGH)) << 32;
-#endif
+		menvcfg_val = csr_read64(CSR_MENVCFG);
 
 		/* Disable double trap by default */
 		menvcfg_val &= ~ENVCFG_DTE;
@@ -151,10 +168,7 @@ static void mstatus_init(struct sbi_scratch *scratch)
 		if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SVADE))
 			menvcfg_val &= ~ENVCFG_ADUE;
 
-		csr_write(CSR_MENVCFG, menvcfg_val);
-#if __riscv_xlen == 32
-		csr_write(CSR_MENVCFGH, menvcfg_val >> 32);
-#endif
+		csr_write64(CSR_MENVCFG, menvcfg_val);
 
 		/* Enable S-mode access to seed CSR */
 		if (sbi_hart_has_extension(scratch, SBI_HART_EXT_ZKR)) {
@@ -203,7 +217,7 @@ static int delegate_traps(struct sbi_scratch *scratch)
 
 	/* Send M-mode interrupts and most exceptions to S-mode */
 	interrupts = MIP_SSIP | MIP_STIP | MIP_SEIP;
-	interrupts |= sbi_pmu_irq_bit();
+	interrupts |= sbi_pmu_irq_mask();
 
 	exceptions = (1U << CAUSE_MISALIGNED_FETCH) | (1U << CAUSE_BREAKPOINT) |
 		     (1U << CAUSE_USER_ECALL);
@@ -688,6 +702,9 @@ const struct sbi_hart_ext_data sbi_hart_ext[] = {
 	__SBI_HART_EXT_DATA(zicfilp, SBI_HART_EXT_ZICFILP),
 	__SBI_HART_EXT_DATA(zicfiss, SBI_HART_EXT_ZICFISS),
 	__SBI_HART_EXT_DATA(ssdbltrp, SBI_HART_EXT_SSDBLTRP),
+	__SBI_HART_EXT_DATA(smctr, SBI_HART_EXT_SMCTR),
+	__SBI_HART_EXT_DATA(ssctr, SBI_HART_EXT_SSCTR),
+	__SBI_HART_EXT_DATA(ssstateen, SBI_HART_EXT_SSSTATEEN),
 };
 
 _Static_assert(SBI_HART_EXT_MAX == array_size(sbi_hart_ext),
@@ -714,6 +731,10 @@ void sbi_hart_get_extensions_str(struct sbi_scratch *scratch,
 	sbi_memset(extensions_str, 0, nestr);
 
 	for_each_set_bit(ext, hfeatures->extensions, SBI_HART_EXT_MAX) {
+		if (offset + sbi_strlen(sbi_hart_ext[ext].name) + 1 > nestr) {
+			sbi_printf("%s:extension name is longer than buffer (error)\n", __func__);
+			break;
+		}
 		sbi_snprintf(extensions_str + offset,
 				 nestr - offset,
 				 "%s,", sbi_hart_ext[ext].name);
@@ -929,6 +950,9 @@ __pmp_skip:
 	/* Detect if hart supports mstateen CSRs */
 	__check_ext_csr(SBI_HART_PRIV_VER_1_12,
 			CSR_MSTATEEN0, SBI_HART_EXT_SMSTATEEN);
+	/* Detect if hart supports sstateen CSRs */
+	__check_ext_csr(SBI_HART_PRIV_VER_1_12,
+			CSR_SSTATEEN0, SBI_HART_EXT_SSSTATEEN);
 	/* Detect if hart supports smcntrpmf */
 	__check_ext_csr(SBI_HART_PRIV_VER_1_12,
 			CSR_MCYCLECFG, SBI_HART_EXT_SMCNTRPMF);

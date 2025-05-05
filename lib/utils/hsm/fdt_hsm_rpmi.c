@@ -12,9 +12,9 @@
 #include <sbi/sbi_heap.h>
 #include <sbi/sbi_hsm.h>
 #include <sbi/sbi_scratch.h>
-#include <sbi_utils/fdt/fdt_helper.h>
+#include <sbi_utils/fdt/fdt_driver.h>
 #include <sbi_utils/fdt/fdt_fixup.h>
-#include <sbi_utils/hsm/fdt_hsm.h>
+#include <sbi_utils/fdt/fdt_helper.h>
 #include <sbi_utils/mailbox/fdt_mailbox.h>
 #include <sbi_utils/mailbox/mailbox.h>
 #include <sbi_utils/mailbox/rpmi_mailbox.h>
@@ -356,7 +356,7 @@ static const struct fdt_match rpmi_hsm_match[] = {
 	{},
 };
 
-struct fdt_driver fdt_hsm_rpmi = {
+const struct fdt_driver fdt_hsm_rpmi = {
 	.match_table = rpmi_hsm_match,
 	.init = rpmi_hsm_cold_init,
 	.experimental = true,
