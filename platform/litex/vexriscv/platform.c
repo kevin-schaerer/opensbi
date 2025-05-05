@@ -63,7 +63,10 @@ static struct aclint_mtimer_data mtimer = {
  */
 static int vex_early_init(bool cold_boot)
 {
-	return 0;
+	if (!cold_boot)
+		return 0;
+
+	return litex_uart_init(VEX_DEFAULT_UART_ADDR);
 }
 
 /*
@@ -80,14 +83,6 @@ static int vex_final_init(bool cold_boot)
 	fdt_fixups(fdt);
 
 	return 0;
-}
-
-/*
- * Initialize the vexRiscv console.
- */
-static int vex_console_init(void)
-{
-	return litex_uart_init(VEX_DEFAULT_UART_ADDR);
 }
 
 /*
@@ -145,7 +140,6 @@ static int vex_timer_init(bool cold_boot)
 const struct sbi_platform_operations platform_ops = {
 	.early_init = vex_early_init,
 	.final_init = vex_final_init,
-	.console_init = vex_console_init,
 	.irqchip_init = vex_irqchip_init,
 	.ipi_init = vex_ipi_init,
 	.timer_init = vex_timer_init

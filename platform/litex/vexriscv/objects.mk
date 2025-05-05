@@ -17,10 +17,16 @@ platform-objs-y += platform.o
 # Command for platform specific "make run"
 platform-runcmd = echo LiteX/VexRiscv SMP
 
-PLATFORM_RISCV_XLEN = 32
-PLATFORM_RISCV_ABI = ilp32
-PLATFORM_RISCV_ISA = rv32imac_zicsr_zifencei
-PLATFORM_RISCV_CODE_MODEL = medany
+#PLATFORM_RISCV_XLEN = 32
+#PLATFORM_RISCV_ABI = ilp32
+#PLATFORM_RISCV_ISA = rv32imac_zicsr_zifencei
+#PLATFORM_RISCV_CODE_MODEL = medany
+
+ifeq ($(CC_SUPPORT_ZICSR_ZIFENCEI), y)
+	PLATFORM_RISCV_ISA = rv$(PLATFORM_RISCV_XLEN)imac_zicsr_zifencei
+else
+	PLATFORM_RISCV_ISA = rv$(PLATFORM_RISCV_XLEN)imac
+endif
 
 # Blobs to build
 FW_TEXT_START=0x40F00000
