@@ -80,6 +80,8 @@
 #define HSTATUS_GVA			_UL(0x00000040)
 #define HSTATUS_VSBE			_UL(0x00000020)
 
+#define MCAUSE_IRQ_MASK			(_UL(1) << (__riscv_xlen - 1))
+
 #define IRQ_S_SOFT			1
 #define IRQ_VS_SOFT			2
 #define IRQ_M_SOFT			3
@@ -205,15 +207,12 @@
 
 #endif
 
-#define MHPMEVENT_SSCOF_MASK		_ULL(0xFFFF000000000000)
+#define MHPMEVENT_SSCOF_MASK		_ULL(0xFF00000000000000)
 
-#if __riscv_xlen > 32
 #define ENVCFG_STCE			(_ULL(1) << 63)
 #define ENVCFG_PBMTE			(_ULL(1) << 62)
-#else
-#define ENVCFGH_STCE			(_UL(1) << 31)
-#define ENVCFGH_PBMTE			(_UL(1) << 30)
-#endif
+#define ENVCFG_ADUE			(_ULL(1) << 61)
+#define ENVCFG_CDE			(_ULL(1) << 60)
 #define ENVCFG_CBZE			(_UL(1) << 7)
 #define ENVCFG_CBCFE			(_UL(1) << 6)
 #define ENVCFG_CBIE_SHIFT		4
@@ -319,6 +318,9 @@
 /* Supervisor Configuration */
 #define CSR_SENVCFG			0x10a
 
+/* Supervisor Conter Inhibit */
+#define CSR_SCOUNTINHIBIT		0x120
+
 /* Supervisor Trap Handling */
 #define CSR_SSCRATCH			0x140
 #define CSR_SEPC			0x141
@@ -333,9 +335,14 @@
 /* Supervisor Protection and Translation */
 #define CSR_SATP			0x180
 
-/* Supervisor-Level Window to Indirectly Accessed Registers (AIA) */
+/* Supervisor Indirect Register Alias */
 #define CSR_SISELECT			0x150
 #define CSR_SIREG			0x151
+#define CSR_SIREG2          		0x152
+#define CSR_SIREG3          		0x153
+#define CSR_SIREG4          		0x155
+#define CSR_SIREG5          		0x156
+#define CSR_SIREG6          		0x157
 
 /* Supervisor-Level Interrupts (AIA) */
 #define CSR_STOPEI			0x15c
@@ -396,9 +403,14 @@
 #define CSR_HVIPRIO1			0x646
 #define CSR_HVIPRIO2			0x647
 
-/* VS-Level Window to Indirectly Accessed Registers (H-extension with AIA) */
+/* Virtual Supervisor Indirect Alias */
 #define CSR_VSISELECT			0x250
 #define CSR_VSIREG			0x251
+#define CSR_VSIREG2         		0x252
+#define CSR_VSIREG3         		0x253
+#define CSR_VSIREG4         		0x255
+#define CSR_VSIREG5         		0x256
+#define CSR_VSIREG6         		0x257
 
 /* VS-Level Interrupts (H-extension with AIA) */
 #define CSR_VSTOPEI			0x25c
@@ -430,6 +442,7 @@
 #define CSR_MARCHID			0xf12
 #define CSR_MIMPID			0xf13
 #define CSR_MHARTID			0xf14
+#define CSR_MCONFIGPTR			0xf15
 
 /* Machine Trap Setup */
 #define CSR_MSTATUS			0x300
@@ -602,6 +615,8 @@
 
 /* Machine Counter Setup */
 #define CSR_MCOUNTINHIBIT		0x320
+#define CSR_MCYCLECFG			0x321
+#define CSR_MINSTRETCFG			0x322
 #define CSR_MHPMEVENT3			0x323
 #define CSR_MHPMEVENT4			0x324
 #define CSR_MHPMEVENT5			0x325
@@ -633,6 +648,8 @@
 #define CSR_MHPMEVENT31			0x33f
 
 /* For RV32 */
+#define CSR_MCYCLECFGH			0x721
+#define CSR_MINSTRETCFGH		0x722
 #define CSR_MHPMEVENT3H			0x723
 #define CSR_MHPMEVENT4H			0x724
 #define CSR_MHPMEVENT5H			0x725
@@ -663,6 +680,21 @@
 #define CSR_MHPMEVENT30H		0x73e
 #define CSR_MHPMEVENT31H		0x73f
 
+/* Machine Security Configuration CSR (mseccfg) */
+#define CSR_MSECCFG			0x747
+#define CSR_MSECCFGH			0x757
+
+#define MSECCFG_MML_SHIFT		(0)
+#define MSECCFG_MML			(_UL(1) << MSECCFG_MML_SHIFT)
+#define MSECCFG_MMWP_SHIFT		(1)
+#define MSECCFG_MMWP			(_UL(1) << MSECCFG_MMWP_SHIFT)
+#define MSECCFG_RLB_SHIFT		(2)
+#define MSECCFG_RLB			(_UL(1) << MSECCFG_RLB_SHIFT)
+#define MSECCFG_USEED_SHIFT		(8)
+#define MSECCFG_USEED			(_UL(1) << MSECCFG_USEED_SHIFT)
+#define MSECCFG_SSEED_SHIFT		(9)
+#define MSECCFG_SSEED			(_UL(1) << MSECCFG_SSEED_SHIFT)
+
 /* Counter Overflow CSR */
 #define CSR_SCOUNTOVF			0xda0
 
@@ -671,6 +703,7 @@
 #define CSR_TDATA1			0x7a1
 #define CSR_TDATA2			0x7a2
 #define CSR_TDATA3			0x7a3
+#define CSR_TINFO			0x7a4
 
 /* Debug Mode Registers */
 #define CSR_DCSR			0x7b0
@@ -678,9 +711,14 @@
 #define CSR_DSCRATCH0			0x7b2
 #define CSR_DSCRATCH1			0x7b3
 
-/* Machine-Level Window to Indirectly Accessed Registers (AIA) */
+/* Machine Indirect Register Alias */
 #define CSR_MISELECT			0x350
 #define CSR_MIREG			0x351
+#define CSR_MIREG2          		0x352
+#define CSR_MIREG3          		0x353
+#define CSR_MIREG4          		0x355
+#define CSR_MIREG5          		0x356
+#define CSR_MIREG6          		0x357
 
 /* Machine-Level Interrupts (AIA) */
 #define CSR_MTOPEI			0x35c
@@ -820,6 +858,13 @@
 #define INSN_MASK_C_FLWSP		0xe003
 #define INSN_MATCH_C_FSWSP		0xe002
 #define INSN_MASK_C_FSWSP		0xe003
+
+#define INSN_MATCH_C_LHU		0x8400
+#define INSN_MASK_C_LHU		0xfc43
+#define INSN_MATCH_C_LH		0x8440
+#define INSN_MASK_C_LH			0xfc43
+#define INSN_MATCH_C_SH		0x8c00
+#define INSN_MASK_C_SH			0xfc43
 
 #define INSN_MASK_WFI			0xffffff00
 #define INSN_MATCH_WFI			0x10500000

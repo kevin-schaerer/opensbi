@@ -17,6 +17,7 @@
 #include <sbi/sbi_pmu.h>
 #include <sbi/sbi_scratch.h>
 #include <sbi/sbi_string.h>
+#include <sbi/sbi_sse.h>
 
 /** Information about hardware counters */
 struct sbi_pmu_hw_event {
@@ -62,6 +63,8 @@ struct sbi_pmu_hart_state {
 	uint32_t active_events[SBI_PMU_HW_CTR_MAX + SBI_PMU_FW_CTR_MAX];
 	/* Bitmap of firmware counters started */
 	unsigned long fw_counters_started;
+	/* if true, SSE is enabled */
+	bool sse_enabled;
 	/*
 	 * Counter values for SBI firmware events and event codes
 	 * for platform firmware events. Both are mutually exclusive
@@ -74,7 +77,7 @@ struct sbi_pmu_hart_state {
 static unsigned long phs_ptr_offset;
 
 #define pmu_get_hart_state_ptr(__scratch)				\
-	sbi_scratch_read_type((__scratch), void *, phs_ptr_offset)
+	phs_ptr_offset ? sbi_scratch_read_type((__scratch), void *, phs_ptr_offset) : NULL
 
 #define pmu_thishart_state_ptr()					\
 	pmu_get_hart_state_ptr(sbi_scratch_thishart_ptr())
@@ -207,6 +210,9 @@ int sbi_pmu_ctr_fw_read(uint32_t cidx, uint64_t *cval)
 	uint32_t event_code;
 	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
 
+	if (unlikely(!phs))
+		return SBI_EINVAL;
+
 	event_idx_type = pmu_ctr_validate(phs, cidx, &event_code);
 	if (event_idx_type != SBI_PMU_EVENT_TYPE_FW)
 		return SBI_EINVAL;
@@ -236,8 +242,7 @@ static int pmu_add_hw_event_map(u32 eidx_start, u32 eidx_end, u32 cmap,
 	bool is_overlap;
 	struct sbi_pmu_hw_event *event = &hw_event_map[num_hw_events];
 	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
-	int hw_ctr_avail = sbi_hart_mhpm_count(scratch);
-	uint32_t ctr_avail_mask = ((uint32_t)(~0) >> (32 - (hw_ctr_avail + 3)));
+	uint32_t ctr_avail_mask = sbi_hart_mhpm_mask(scratch) | 0x7;
 
 	/* The first two counters are reserved by priv spec */
 	if (eidx_start > SBI_PMU_HW_INSTRUCTIONS && (cmap & SBI_PMU_FIXED_CTR_MASK))
@@ -298,6 +303,16 @@ int sbi_pmu_add_raw_event_counter_map(uint64_t select, uint64_t select_mask, u32
 				    SBI_PMU_EVENT_RAW_IDX, cmap, select, select_mask);
 }
 
+void sbi_pmu_ovf_irq()
+{
+	/*
+	 * We need to disable LCOFIP before returning to S-mode or we will loop
+	 * on LCOFIP being triggered
+	 */
+	csr_clear(CSR_MIE, MIP_LCOFIP);
+	sbi_sse_inject_event(SBI_SSE_EVENT_LOCAL_PMU);
+}
+
 static int pmu_ctr_enable_irq_hw(int ctr_idx)
 {
 	unsigned long mhpmevent_csr;
@@ -354,8 +369,11 @@ static int pmu_ctr_start_hw(uint32_t cidx, uint64_t ival, bool ival_update)
 	if (cidx >= num_hw_ctrs || cidx == 1)
 		return SBI_EINVAL;
 
-	if (sbi_hart_priv_version(scratch) < SBI_HART_PRIV_VER_1_11)
-		goto skip_inhibit_update;
+	if (sbi_hart_priv_version(scratch) < SBI_HART_PRIV_VER_1_11) {
+		if (ival_update)
+			pmu_ctr_write_hw(cidx, ival);
+		return 0;
+	}
 
 	/*
 	 * Some of the hardware may not support mcountinhibit but perf stat
@@ -369,13 +387,12 @@ static int pmu_ctr_start_hw(uint32_t cidx, uint64_t ival, bool ival_update)
 
 	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SSCOFPMF))
 		pmu_ctr_enable_irq_hw(cidx);
-	if (pmu_dev && pmu_dev->hw_counter_enable_irq)
-		pmu_dev->hw_counter_enable_irq(cidx);
-	csr_write(CSR_MCOUNTINHIBIT, mctr_inhbt);
-
-skip_inhibit_update:
 	if (ival_update)
 		pmu_ctr_write_hw(cidx, ival);
+	if (pmu_dev && pmu_dev->hw_counter_enable_irq)
+		pmu_dev->hw_counter_enable_irq(cidx);
+
+	csr_write(CSR_MCOUNTINHIBIT, mctr_inhbt);
 
 	return 0;
 }
@@ -431,6 +448,10 @@ int sbi_pmu_ctr_start(unsigned long cbase, unsigned long cmask,
 		      unsigned long flags, uint64_t ival)
 {
 	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
+
+	if (unlikely(!phs))
+		return SBI_EINVAL;
+
 	int event_idx_type;
 	uint32_t event_code;
 	int ret = SBI_EINVAL;
@@ -441,10 +462,13 @@ int sbi_pmu_ctr_start(unsigned long cbase, unsigned long cmask,
 	if ((cbase + sbi_fls(cmask)) >= total_ctrs)
 		return ret;
 
+	if (flags & SBI_PMU_STOP_FLAG_TAKE_SNAPSHOT)
+		return SBI_ENO_SHMEM;
+
 	if (flags & SBI_PMU_START_FLAG_SET_INIT_VALUE)
 		bUpdate = true;
 
-	for_each_set_bit(i, &cmask, total_ctrs) {
+	for_each_set_bit(i, &cmask, BITS_PER_LONG) {
 		cidx = i + cbase;
 		event_idx_type = pmu_ctr_validate(phs, cidx, &event_code);
 		if (event_idx_type < 0)
@@ -481,6 +505,9 @@ static int pmu_ctr_stop_hw(uint32_t cidx)
 	if (!__test_bit(cidx, &mctr_inhbt)) {
 		__set_bit(cidx, &mctr_inhbt);
 		csr_write(CSR_MCOUNTINHIBIT, mctr_inhbt);
+		if (pmu_dev && pmu_dev->hw_counter_disable_irq) {
+			pmu_dev->hw_counter_disable_irq(cidx);
+		}
 		return 0;
 	} else
 		return SBI_EALREADY_STOPPED;
@@ -528,6 +555,10 @@ int sbi_pmu_ctr_stop(unsigned long cbase, unsigned long cmask,
 		     unsigned long flag)
 {
 	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
+
+	if (unlikely(!phs))
+		return SBI_EINVAL;
+
 	int ret = SBI_EINVAL;
 	int event_idx_type;
 	uint32_t event_code;
@@ -536,7 +567,10 @@ int sbi_pmu_ctr_stop(unsigned long cbase, unsigned long cmask,
 	if ((cbase + sbi_fls(cmask)) >= total_ctrs)
 		return SBI_EINVAL;
 
-	for_each_set_bit(i, &cmask, total_ctrs) {
+	if (flag & SBI_PMU_STOP_FLAG_TAKE_SNAPSHOT)
+		return SBI_ENO_SHMEM;
+
+	for_each_set_bit(i, &cmask, BITS_PER_LONG) {
 		cidx = i + cbase;
 		event_idx_type = pmu_ctr_validate(phs, cidx, &event_code);
 		if (event_idx_type < 0)
@@ -553,6 +587,10 @@ int sbi_pmu_ctr_stop(unsigned long cbase, unsigned long cmask,
 			pmu_reset_hw_mhpmevent(cidx);
 		}
 	}
+
+	/* Clear MIP_LCOFIP to avoid spurious interrupts */
+	if (phs->sse_enabled)
+		csr_clear(CSR_MIP, MIP_LCOFIP);
 
 	return ret;
 }
@@ -595,7 +633,10 @@ static int pmu_update_hw_mhpmevent(struct sbi_pmu_hw_event *hw_evt, int ctr_idx,
 		pmu_dev->hw_counter_disable_irq(ctr_idx);
 
 	/* Update the inhibit flags based on inhibit flags received from supervisor */
-	pmu_update_inhibit_flags(flags, &mhpmevent_val);
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SSCOFPMF))
+		pmu_update_inhibit_flags(flags, &mhpmevent_val);
+	if (pmu_dev && pmu_dev->hw_counter_filter_mode)
+		pmu_dev->hw_counter_filter_mode(flags, ctr_idx);
 
 #if __riscv_xlen == 32
 	csr_write_num(CSR_MHPMEVENT3 + ctr_idx - 3, mhpmevent_val & 0xFFFFFFFF);
@@ -609,7 +650,50 @@ static int pmu_update_hw_mhpmevent(struct sbi_pmu_hw_event *hw_evt, int ctr_idx,
 	return 0;
 }
 
-static int pmu_ctr_find_fixed_fw(unsigned long evt_idx_code)
+static int pmu_fixed_ctr_update_inhibit_bits(int fixed_ctr, unsigned long flags)
+{
+	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
+	uint64_t cfg_val = 0, cfg_csr_no;
+#if __riscv_xlen == 32
+	uint64_t cfgh_csr_no;
+#endif
+	if (!sbi_hart_has_extension(scratch, SBI_HART_EXT_SMCNTRPMF) &&
+		!(pmu_dev && pmu_dev->hw_counter_filter_mode))
+		return fixed_ctr;
+
+	switch (fixed_ctr) {
+	case 0:
+		cfg_csr_no = CSR_MCYCLECFG;
+#if __riscv_xlen == 32
+		cfgh_csr_no = CSR_MCYCLECFGH;
+#endif
+		break;
+	case 2:
+		cfg_csr_no = CSR_MINSTRETCFG;
+#if __riscv_xlen == 32
+		cfgh_csr_no = CSR_MINSTRETCFGH;
+#endif
+		break;
+	default:
+		return SBI_EFAIL;
+	}
+
+	cfg_val |= MHPMEVENT_MINH;
+	if (sbi_hart_has_extension(scratch, SBI_HART_EXT_SMCNTRPMF)) {
+		pmu_update_inhibit_flags(flags, &cfg_val);
+#if __riscv_xlen == 32
+		csr_write_num(cfg_csr_no, cfg_val & 0xFFFFFFFF);
+		csr_write_num(cfgh_csr_no, cfg_val >> BITS_PER_LONG);
+#else
+		csr_write_num(cfg_csr_no, cfg_val);
+#endif
+	}
+	if (pmu_dev && pmu_dev->hw_counter_filter_mode)
+		pmu_dev->hw_counter_filter_mode(flags, fixed_ctr);
+	return fixed_ctr;
+}
+
+static int pmu_ctr_find_fixed_hw(unsigned long evt_idx_code)
 {
 	/* Non-programmables counters are enabled always. No need to do lookup */
 	if (evt_idx_code == SBI_PMU_HW_CPU_CYCLES)
@@ -638,10 +722,10 @@ static int pmu_ctr_find_hw(struct sbi_pmu_hart_state *phs,
 	 * If Sscof is present try to find the programmable counter for
 	 * cycle/instret as well.
 	 */
-	fixed_ctr = pmu_ctr_find_fixed_fw(event_idx);
+	fixed_ctr = pmu_ctr_find_fixed_hw(event_idx);
 	if (fixed_ctr >= 0 &&
 	    !sbi_hart_has_extension(scratch, SBI_HART_EXT_SSCOFPMF))
-		return fixed_ctr;
+		return pmu_fixed_ctr_update_inhibit_bits(fixed_ctr, flags);
 
 	if (sbi_hart_priv_version(scratch) >= SBI_HART_PRIV_VER_1_11)
 		mctr_inhbt = csr_read(CSR_MCOUNTINHIBIT);
@@ -684,7 +768,7 @@ static int pmu_ctr_find_hw(struct sbi_pmu_hart_state *phs,
 		 * Return the fixed counter as they are mandatory anyways.
 		 */
 		if (fixed_ctr >= 0)
-			return fixed_ctr;
+			return pmu_fixed_ctr_update_inhibit_bits(fixed_ctr, flags);
 		else
 			return SBI_EFAIL;
 	}
@@ -738,6 +822,10 @@ int sbi_pmu_ctr_cfg_match(unsigned long cidx_base, unsigned long cidx_mask,
 			  uint64_t event_data)
 {
 	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
+
+	if (unlikely(!phs))
+		return SBI_EINVAL;
+
 	int ret, event_type, ctr_idx = SBI_ENOTSUPP;
 	u32 event_code;
 
@@ -813,6 +901,9 @@ int sbi_pmu_ctr_incr_fw(enum sbi_pmu_fw_event_code_id fw_id)
 	uint64_t *fcounter = NULL;
 	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
 
+	if (unlikely(!phs))
+		return 0;
+
 	if (likely(!phs->fw_counters_started))
 		return 0;
 
@@ -843,13 +934,17 @@ int sbi_pmu_ctr_get_info(uint32_t cidx, unsigned long *ctr_info)
 	int width;
 	union sbi_pmu_ctr_info cinfo = {0};
 	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
+	unsigned long counter_mask = (unsigned long)sbi_hart_mhpm_mask(scratch) |
+				     SBI_PMU_CY_IR_MASK;
 
-	/* Sanity check. Counter1 is not mapped at all */
-	if (cidx >= total_ctrs || cidx == 1)
+	/* Sanity check */
+	if (cidx >= total_ctrs)
 		return SBI_EINVAL;
 
 	/* We have 31 HW counters with 31 being the last index(MHPMCOUNTER31) */
 	if (cidx < num_hw_ctrs) {
+		if (!(__test_bit(cidx, &counter_mask)))
+			return SBI_EINVAL;
 		cinfo.type = SBI_PMU_CTR_TYPE_HW;
 		cinfo.csr = CSR_CYCLE + cidx;
 		/* mcycle & minstret are always 64 bit */
@@ -884,6 +979,7 @@ static void pmu_reset_event_map(struct sbi_pmu_hart_state *phs)
 	for (j = 0; j < SBI_PMU_FW_CTR_MAX; j++)
 		phs->fw_counters_data[j] = 0;
 	phs->fw_counters_started = 0;
+	phs->sse_enabled = 0;
 }
 
 const struct sbi_pmu_device *sbi_pmu_get_device(void)
@@ -901,19 +997,57 @@ void sbi_pmu_set_device(const struct sbi_pmu_device *dev)
 
 void sbi_pmu_exit(struct sbi_scratch *scratch)
 {
+	struct sbi_pmu_hart_state *phs = pmu_get_hart_state_ptr(scratch);
+
 	if (sbi_hart_priv_version(scratch) >= SBI_HART_PRIV_VER_1_11)
 		csr_write(CSR_MCOUNTINHIBIT, 0xFFFFFFF8);
 
 	if (sbi_hart_priv_version(scratch) >= SBI_HART_PRIV_VER_1_10)
 		csr_write(CSR_MCOUNTEREN, -1);
 
-	pmu_reset_event_map(pmu_get_hart_state_ptr(scratch));
+	if (unlikely(!phs))
+		return;
+
+	pmu_reset_event_map(phs);
 }
+
+static void pmu_sse_enable(uint32_t event_id)
+{
+	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
+
+	phs->sse_enabled = true;
+	csr_clear(CSR_MIDELEG, sbi_pmu_irq_bit());
+	csr_clear(CSR_MIP, MIP_LCOFIP);
+	csr_set(CSR_MIE, MIP_LCOFIP);
+}
+
+static void pmu_sse_disable(uint32_t event_id)
+{
+	struct sbi_pmu_hart_state *phs = pmu_thishart_state_ptr();
+
+	csr_clear(CSR_MIE, MIP_LCOFIP);
+	csr_clear(CSR_MIP, MIP_LCOFIP);
+	csr_set(CSR_MIDELEG, sbi_pmu_irq_bit());
+	phs->sse_enabled = false;
+}
+
+static void pmu_sse_complete(uint32_t event_id)
+{
+	csr_set(CSR_MIE, MIP_LCOFIP);
+}
+
+static const struct sbi_sse_cb_ops pmu_sse_cb_ops = {
+	.enable_cb = pmu_sse_enable,
+	.disable_cb = pmu_sse_disable,
+	.complete_cb = pmu_sse_complete,
+};
 
 int sbi_pmu_init(struct sbi_scratch *scratch, bool cold_boot)
 {
+	int hpm_count = sbi_fls(sbi_hart_mhpm_mask(scratch));
 	struct sbi_pmu_hart_state *phs;
 	const struct sbi_platform *plat;
+	int rc;
 
 	if (cold_boot) {
 		hw_event_map = sbi_calloc(sizeof(*hw_event_map),
@@ -929,14 +1063,25 @@ int sbi_pmu_init(struct sbi_scratch *scratch, bool cold_boot)
 
 		plat = sbi_platform_ptr(scratch);
 		/* Initialize hw pmu events */
-		sbi_platform_pmu_init(plat);
+		rc = sbi_platform_pmu_init(plat);
+		if (rc)
+			sbi_dprintf("%s: platform pmu init failed "
+				    "(error %d)\n", __func__, rc);
 
 		/* mcycle & minstret is available always */
-		num_hw_ctrs = sbi_hart_mhpm_count(scratch) + 3;
+		if (!hpm_count)
+			/* Only CY, TM & IR are implemented in the hw */
+			num_hw_ctrs = 3;
+		else
+			num_hw_ctrs = hpm_count + 1;
+
 		if (num_hw_ctrs > SBI_PMU_HW_CTR_MAX)
 			return SBI_EINVAL;
+
 		total_ctrs = num_hw_ctrs + SBI_PMU_FW_CTR_MAX;
 	}
+
+	sbi_sse_set_cb_ops(SBI_SSE_EVENT_LOCAL_PMU, &pmu_sse_cb_ops);
 
 	phs = pmu_get_hart_state_ptr(scratch);
 	if (!phs) {

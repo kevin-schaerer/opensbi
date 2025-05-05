@@ -5,7 +5,8 @@
  */
 
 #include <platform_override.h>
-#include <thead_c9xx.h>
+#include <thead/c9xx_encoding.h>
+#include <thead/c9xx_pmu.h>
 #include <sbi/riscv_asm.h>
 #include <sbi/riscv_io.h>
 #include <sbi/sbi_bitops.h>
@@ -32,15 +33,6 @@
 #define RISCV_CFG_BGR_REG		0xd0c
 #define PPU_BGR_REG			0x1ac
 
-/*
- * CSRs
- */
-
-#define CSR_MXSTATUS			0x7c0
-#define CSR_MHCR			0x7c1
-#define CSR_MCOR			0x7c2
-#define CSR_MHINT			0x7c5
-
 static unsigned long csr_mxstatus;
 static unsigned long csr_mhcr;
 static unsigned long csr_mhint;
@@ -48,24 +40,24 @@ static unsigned long csr_mhint;
 static void sun20i_d1_csr_save(void)
 {
 	/* Save custom CSRs. */
-	csr_mxstatus	= csr_read(CSR_MXSTATUS);
-	csr_mhcr	= csr_read(CSR_MHCR);
-	csr_mhint	= csr_read(CSR_MHINT);
+	csr_mxstatus	= csr_read(THEAD_C9XX_CSR_MXSTATUS);
+	csr_mhcr	= csr_read(THEAD_C9XX_CSR_MHCR);
+	csr_mhint	= csr_read(THEAD_C9XX_CSR_MHINT);
 
 	/* Flush and disable caches. */
-	csr_write(CSR_MCOR, 0x22);
-	csr_write(CSR_MHCR, 0x0);
+	csr_write(THEAD_C9XX_CSR_MCOR, 0x22);
+	csr_write(THEAD_C9XX_CSR_MHCR, 0x0);
 }
 
 static void sun20i_d1_csr_restore(void)
 {
 	/* Invalidate caches and the branch predictor. */
-	csr_write(CSR_MCOR, 0x70013);
+	csr_write(THEAD_C9XX_CSR_MCOR, 0x70013);
 
 	/* Restore custom CSRs, including the cache state. */
-	csr_write(CSR_MXSTATUS,	csr_mxstatus);
-	csr_write(CSR_MHCR,	csr_mhcr);
-	csr_write(CSR_MHINT,	csr_mhint);
+	csr_write(THEAD_C9XX_CSR_MXSTATUS, csr_mxstatus);
+	csr_write(THEAD_C9XX_CSR_MHCR, csr_mhcr);
+	csr_write(THEAD_C9XX_CSR_MHINT, csr_mhint);
 }
 
 /*
@@ -150,7 +142,7 @@ static void sun20i_d1_riscv_cfg_restore(void)
 
 static void sun20i_d1_riscv_cfg_init(void)
 {
-	u64 entry = sbi_hartid_to_scratch(0)->warmboot_addr;
+	u64 entry = sbi_scratch_thishart_ptr()->warmboot_addr;
 
 	/* Enable MMIO access. */
 	writel_relaxed(CCU_BGR_ENABLE, SUN20I_D1_CCU_BASE + RISCV_CFG_BGR_REG);
@@ -223,56 +215,14 @@ static int sun20i_d1_fdt_fixup(void *fdt, const struct fdt_match *match)
 	return fdt_add_cpu_idle_states(fdt, sun20i_d1_cpu_idle_states);
 }
 
-static void thead_c9xx_pmu_ctr_enable_irq(uint32_t ctr_idx)
-{
-	unsigned long mip_val;
-
-	if (ctr_idx >= SBI_PMU_HW_CTR_MAX)
-		return;
-
-	mip_val = csr_read(CSR_MIP);
-	/**
-	 * Clear out the OF bit so that next interrupt can be enabled.
-	 * This should be done only when the corresponding overflow interrupt
-	 * bit is cleared. That indicates that software has already handled the
-	 * previous interrupts or the hardware yet to set an overflow interrupt.
-	 * Otherwise, there will be race conditions where we may clear the bit
-	 * the software is yet to handle the interrupt.
-	 */
-	if (!(mip_val & THEAD_C9XX_MIP_MOIP))
-		csr_clear(THEAD_C9XX_CSR_MCOUNTEROF, BIT(ctr_idx));
-
-	/**
-	 * SSCOFPMF uses the OF bit for enabling/disabling the interrupt,
-	 * while the C9XX has designated enable bits.
-	 * So enable per-counter interrupt on C9xx here.
-	 */
-	csr_set(THEAD_C9XX_CSR_MCOUNTERINTEN, BIT(ctr_idx));
-}
-
-static void thead_c9xx_pmu_ctr_disable_irq(uint32_t ctr_idx)
-{
-	csr_clear(THEAD_C9XX_CSR_MCOUNTERINTEN, BIT(ctr_idx));
-}
-
-static int thead_c9xx_pmu_irq_bit(void)
-{
-	return THEAD_C9XX_MIP_MOIP;
-}
-
-const struct sbi_pmu_device thead_c9xx_pmu_device = {
-	.hw_counter_enable_irq = thead_c9xx_pmu_ctr_enable_irq,
-	.hw_counter_disable_irq = thead_c9xx_pmu_ctr_disable_irq,
-	.hw_counter_irq_bit = thead_c9xx_pmu_irq_bit,
-};
-
 static int sun20i_d1_extensions_init(const struct fdt_match *match,
 				     struct sbi_hart_features *hfeatures)
 {
-	sbi_pmu_set_device(&thead_c9xx_pmu_device);
+	thead_c9xx_register_pmu_device();
 
 	/* auto-detection doesn't work on t-head c9xx cores */
-	hfeatures->mhpm_count = 29;
+	/* D1 has 29 mhpmevent csrs, but only 3-9,13-17 have valid value */
+	hfeatures->mhpm_mask = 0x0003e3f8;
 	hfeatures->mhpm_bits = 64;
 
 	return 0;

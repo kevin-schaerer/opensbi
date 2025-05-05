@@ -10,10 +10,13 @@
 #include <libfdt.h>
 #include <platform_override.h>
 #include <sbi/riscv_asm.h>
+#include <sbi/sbi_bitops.h>
 #include <sbi/sbi_hartmask.h>
+#include <sbi/sbi_heap.h>
 #include <sbi/sbi_platform.h>
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_system.h>
+#include <sbi/sbi_tlb.h>
 #include <sbi_utils/fdt/fdt_domain.h>
 #include <sbi_utils/fdt/fdt_fixup.h>
 #include <sbi_utils/fdt/fdt_helper.h>
@@ -54,9 +57,76 @@ static void fw_platform_lookup_special(void *fdt, int root_offset)
 	}
 }
 
+static u32 fw_platform_calculate_heap_size(u32 hart_count)
+{
+	u32 heap_size;
+
+	heap_size = SBI_PLATFORM_DEFAULT_HEAP_SIZE(hart_count);
+
+	/* For TLB fifo */
+	heap_size += SBI_TLB_INFO_SIZE * (hart_count) * (hart_count);
+
+	return BIT_ALIGN(heap_size, HEAP_BASE_ALIGN);
+}
+
 extern struct sbi_platform platform;
 static bool platform_has_mlevel_imsic = false;
 static u32 generic_hart_index2id[SBI_HARTMASK_MAX_BITS] = { 0 };
+
+static DECLARE_BITMAP(generic_coldboot_harts, SBI_HARTMASK_MAX_BITS);
+
+/*
+ * The fw_platform_coldboot_harts_init() function is called by fw_platform_init() 
+ * function to initialize the cold boot harts allowed by the generic platform
+ * according to the DT property "cold-boot-harts" in "/chosen/opensbi-config" 
+ * DT node. If there is no "cold-boot-harts" in DT, all harts will be allowed.
+ */
+static void fw_platform_coldboot_harts_init(void *fdt)
+{
+	int chosen_offset, config_offset, cpu_offset, len, err;
+	u32 val32;
+	const u32 *val;
+
+	bitmap_zero(generic_coldboot_harts, SBI_HARTMASK_MAX_BITS);
+
+	chosen_offset = fdt_path_offset(fdt, "/chosen");
+	if (chosen_offset < 0)
+		goto default_config;
+
+	config_offset = fdt_node_offset_by_compatible(fdt, chosen_offset, "opensbi,config");
+	if (config_offset < 0)
+		goto default_config;
+
+	val = fdt_getprop(fdt, config_offset, "cold-boot-harts", &len);
+	len = len / sizeof(u32);
+	if (val && len) {
+		for (int i = 0; i < len; i++) {
+			cpu_offset = fdt_node_offset_by_phandle(fdt,
+							fdt32_to_cpu(val[i]));
+			if (cpu_offset < 0)
+				goto default_config;
+
+			err = fdt_parse_hart_id(fdt, cpu_offset, &val32);
+			if (err)
+				goto default_config;
+
+			if (!fdt_node_is_enabled(fdt, cpu_offset))
+				continue;
+
+			for (int i = 0; i < platform.hart_count; i++) {
+				if (val32 == generic_hart_index2id[i])
+					bitmap_set(generic_coldboot_harts, i, 1);
+			}
+
+		}
+	}
+
+	return;
+
+default_config:
+	bitmap_fill(generic_coldboot_harts, SBI_HARTMASK_MAX_BITS);
+	return;
+}
 
 /*
  * The fw_platform_init() function is called very early on the boot HART
@@ -115,8 +185,10 @@ unsigned long fw_platform_init(unsigned long arg0, unsigned long arg1,
 	}
 
 	platform.hart_count = hart_count;
-	platform.heap_size = SBI_PLATFORM_DEFAULT_HEAP_SIZE(hart_count);
+	platform.heap_size = fw_platform_calculate_heap_size(hart_count);
 	platform_has_mlevel_imsic = fdt_check_imsic_mlevel(fdt);
+
+	fw_platform_coldboot_harts_init(fdt);
 
 	/* Return original FDT pointer */
 	return arg1;
@@ -131,7 +203,13 @@ static bool generic_cold_boot_allowed(u32 hartid)
 	if (generic_plat && generic_plat->cold_boot_allowed)
 		return generic_plat->cold_boot_allowed(
 						hartid, generic_plat_match);
-	return true;
+
+	for (int i = 0; i < platform.hart_count; i++) {
+		if (hartid == generic_hart_index2id[i])
+			return bitmap_test(generic_coldboot_harts, i);
+	}
+
+	return false;
 }
 
 static int generic_nascent_init(void)
@@ -188,12 +266,10 @@ static bool generic_vendor_ext_check(void)
 }
 
 static int generic_vendor_ext_provider(long funcid,
-				       const struct sbi_trap_regs *regs,
-				       unsigned long *out_value,
-				       struct sbi_trap_info *out_trap)
+				       struct sbi_trap_regs *regs,
+				       struct sbi_ecall_return *out)
 {
-	return generic_plat->vendor_ext_provider(funcid, regs,
-						 out_value, out_trap,
+	return generic_plat->vendor_ext_provider(funcid, regs, out,
 						 generic_plat_match);
 }
 
@@ -211,6 +287,15 @@ static void generic_final_exit(void)
 
 static int generic_extensions_init(struct sbi_hart_features *hfeatures)
 {
+	int rc;
+
+	/* Parse the ISA string from FDT and enable the listed extensions */
+	rc = fdt_parse_isa_extensions(fdt_get_address(), current_hartid(),
+				      hfeatures->extensions);
+
+	if (rc)
+		return rc;
+
 	if (generic_plat && generic_plat->extensions_init)
 		return generic_plat->extensions_init(generic_plat_match,
 						     hfeatures);
@@ -231,7 +316,7 @@ static int generic_domains_init(void)
 
 	if (offset >= 0) {
 		offset = fdt_node_offset_by_compatible(fdt, offset,
-						       "opensbi,domain,config");
+						       "opensbi,config");
 		if (offset >= 0 &&
 		    fdt_get_property(fdt, offset, "system-suspend-test", NULL))
 			sbi_system_suspend_test_enable();
@@ -247,9 +332,28 @@ static u64 generic_tlbr_flush_limit(void)
 	return SBI_PLATFORM_TLB_RANGE_FLUSH_LIMIT_DEFAULT;
 }
 
+static u32 generic_tlb_num_entries(void)
+{
+	if (generic_plat && generic_plat->tlb_num_entries)
+		return generic_plat->tlb_num_entries(generic_plat_match);
+	return sbi_scratch_last_hartindex() + 1;
+}
+
 static int generic_pmu_init(void)
 {
-	return fdt_pmu_setup(fdt_get_address());
+	int rc;
+
+	if (generic_plat && generic_plat->pmu_init) {
+		rc = generic_plat->pmu_init(generic_plat_match);
+		if (rc)
+			return rc;
+	}
+
+	rc = fdt_pmu_setup(fdt_get_address());
+	if (rc && rc != SBI_ENOENT)
+		return rc;
+
+	return 0;
 }
 
 static uint64_t generic_pmu_xlate_to_mhpmevent(uint32_t event_idx,
@@ -299,6 +403,7 @@ const struct sbi_platform_operations platform_ops = {
 	.pmu_init		= generic_pmu_init,
 	.pmu_xlate_to_mhpmevent = generic_pmu_xlate_to_mhpmevent,
 	.get_tlbr_flush_limit	= generic_tlbr_flush_limit,
+	.get_tlb_num_entries	= generic_tlb_num_entries,
 	.timer_init		= fdt_timer_init,
 	.timer_exit		= fdt_timer_exit,
 	.vendor_ext_check	= generic_vendor_ext_check,

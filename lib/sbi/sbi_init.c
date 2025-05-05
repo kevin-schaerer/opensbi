@@ -10,11 +10,11 @@
 #include <sbi/riscv_asm.h>
 #include <sbi/riscv_atomic.h>
 #include <sbi/riscv_barrier.h>
-#include <sbi/riscv_locks.h>
 #include <sbi/sbi_console.h>
 #include <sbi/sbi_cppc.h>
 #include <sbi/sbi_domain.h>
 #include <sbi/sbi_ecall.h>
+#include <sbi/sbi_fwft.h>
 #include <sbi/sbi_hart.h>
 #include <sbi/sbi_hartmask.h>
 #include <sbi/sbi_heap.h>
@@ -23,11 +23,14 @@
 #include <sbi/sbi_irqchip.h>
 #include <sbi/sbi_platform.h>
 #include <sbi/sbi_pmu.h>
+#include <sbi/sbi_dbtr.h>
+#include <sbi/sbi_sse.h>
 #include <sbi/sbi_system.h>
 #include <sbi/sbi_string.h>
 #include <sbi/sbi_timer.h>
 #include <sbi/sbi_tlb.h>
 #include <sbi/sbi_version.h>
+#include <sbi/sbi_unit_test.h>
 
 #define BANNER                                              \
 	"   ____                    _____ ____ _____\n"     \
@@ -176,86 +179,31 @@ static void sbi_boot_print_hart(struct sbi_scratch *scratch, u32 hartid)
 	sbi_printf("Boot HART ISA Extensions  : %s\n", str);
 	sbi_printf("Boot HART PMP Count       : %d\n",
 		   sbi_hart_pmp_count(scratch));
-	sbi_printf("Boot HART PMP Granularity : %lu\n",
-		   sbi_hart_pmp_granularity(scratch));
+	sbi_printf("Boot HART PMP Granularity : %u bits\n",
+		   sbi_hart_pmp_log2gran(scratch));
 	sbi_printf("Boot HART PMP Address Bits: %d\n",
 		   sbi_hart_pmp_addrbits(scratch));
-	sbi_printf("Boot HART MHPM Count      : %d\n",
-		   sbi_hart_mhpm_count(scratch));
+	sbi_printf("Boot HART MHPM Info       : %lu (0x%08x)\n",
+		   sbi_popcount(sbi_hart_mhpm_mask(scratch)),
+		   sbi_hart_mhpm_mask(scratch));
+	sbi_printf("Boot HART Debug Triggers  : %d triggers\n",
+		   sbi_dbtr_get_total_triggers());
 	sbi_hart_delegation_dump(scratch, "Boot HART ", "         ");
 }
-
-static spinlock_t coldboot_lock = SPIN_LOCK_INITIALIZER;
-static struct sbi_hartmask coldboot_wait_hmask = { 0 };
 
 static unsigned long coldboot_done;
 
 static void wait_for_coldboot(struct sbi_scratch *scratch, u32 hartid)
 {
-	unsigned long saved_mie, cmip;
-
-	/* Save MIE CSR */
-	saved_mie = csr_read(CSR_MIE);
-
-	/* Set MSIE and MEIE bits to receive IPI */
-	csr_set(CSR_MIE, MIP_MSIP | MIP_MEIP);
-
-	/* Acquire coldboot lock */
-	spin_lock(&coldboot_lock);
-
-	/* Mark current HART as waiting */
-	sbi_hartmask_set_hart(hartid, &coldboot_wait_hmask);
-
-	/* Release coldboot lock */
-	spin_unlock(&coldboot_lock);
-
-	/* Wait for coldboot to finish using WFI */
-	while (!__smp_load_acquire(&coldboot_done)) {
-		do {
-			wfi();
-			cmip = csr_read(CSR_MIP);
-		 } while (!(cmip & (MIP_MSIP | MIP_MEIP)));
-	}
-
-	/* Acquire coldboot lock */
-	spin_lock(&coldboot_lock);
-
-	/* Unmark current HART as waiting */
-	sbi_hartmask_clear_hart(hartid, &coldboot_wait_hmask);
-
-	/* Release coldboot lock */
-	spin_unlock(&coldboot_lock);
-
-	/* Restore MIE CSR */
-	csr_write(CSR_MIE, saved_mie);
-
-	/*
-	 * The wait for coldboot is common for both warm startup and
-	 * warm resume path so clearing IPI here would result in losing
-	 * an IPI in warm resume path.
-	 *
-	 * Also, the sbi_platform_ipi_init() called from sbi_ipi_init()
-	 * will automatically clear IPI for current HART.
-	 */
+	/* Wait for coldboot to finish */
+	while (!__smp_load_acquire(&coldboot_done))
+		cpu_relax();
 }
 
 static void wake_coldboot_harts(struct sbi_scratch *scratch, u32 hartid)
 {
 	/* Mark coldboot done */
 	__smp_store_release(&coldboot_done, 1);
-
-	/* Acquire coldboot lock */
-	spin_lock(&coldboot_lock);
-
-	/* Send an IPI to all HARTs waiting for coldboot */
-	for (u32 i = 0; i <= sbi_scratch_last_hartid(); i++) {
-		if ((i != hartid) &&
-		    sbi_hartmask_test_hart(i, &coldboot_wait_hmask))
-			sbi_ipi_raw_send(i);
-	}
-
-	/* Release coldboot lock */
-	spin_unlock(&coldboot_lock);
 }
 
 static unsigned long entry_count_offset;
@@ -297,6 +245,14 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 	if (rc)
 		sbi_hart_hang();
 
+	/*
+	 * All non-coldboot HARTs do HSM initialization (i.e. enter HSM state
+	 * machine) at the start of the warmboot path so it is wasteful to
+	 * have these HARTs busy spin in wait_for_coldboot() until coldboot
+	 * path is completed.
+	 */
+	wake_coldboot_harts(scratch, hartid);
+
 	rc = sbi_platform_early_init(plat, true);
 	if (rc)
 		sbi_hart_hang();
@@ -309,12 +265,22 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 	if (rc)
 		sbi_hart_hang();
 
+	rc = sbi_sse_init(scratch, true);
+	if (rc) {
+		sbi_printf("%s: sse init failed (error %d)\n", __func__, rc);
+		sbi_hart_hang();
+	}
+
 	rc = sbi_pmu_init(scratch, true);
 	if (rc) {
 		sbi_printf("%s: pmu init failed (error %d)\n",
 			   __func__, rc);
 		sbi_hart_hang();
 	}
+
+	rc = sbi_dbtr_init(scratch, true);
+	if (rc)
+		sbi_hart_hang();
 
 	sbi_boot_print_banner(scratch);
 
@@ -343,6 +309,12 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 		sbi_hart_hang();
 	}
 
+	rc = sbi_fwft_init(scratch, true);
+	if (rc) {
+		sbi_printf("%s: fwft init failed (error %d)\n", __func__, rc);
+		sbi_hart_hang();
+	}
+
 	/*
 	 * Note: Finalize domains after HSM initialization so that we
 	 * can startup non-root domains.
@@ -352,13 +324,6 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 	rc = sbi_domain_finalize(scratch, hartid);
 	if (rc) {
 		sbi_printf("%s: domain finalize failed (error %d)\n",
-			   __func__, rc);
-		sbi_hart_hang();
-	}
-
-	rc = sbi_hart_pmp_configure(scratch);
-	if (rc) {
-		sbi_printf("%s: PMP configure failed (error %d)\n",
 			   __func__, rc);
 		sbi_hart_hang();
 	}
@@ -392,7 +357,18 @@ static void __noreturn init_coldboot(struct sbi_scratch *scratch, u32 hartid)
 
 	sbi_boot_print_hart(scratch, hartid);
 
-	wake_coldboot_harts(scratch, hartid);
+	run_all_tests();
+
+	/*
+	 * Configure PMP at last because if SMEPMP is detected,
+	 * M-mode access to the S/U space will be rescinded.
+	 */
+	rc = sbi_hart_pmp_configure(scratch);
+	if (rc) {
+		sbi_printf("%s: PMP configure failed (error %d)\n",
+			   __func__, rc);
+		sbi_hart_hang();
+	}
 
 	count = sbi_scratch_offset_ptr(scratch, init_count_offset);
 	(*count)++;
@@ -413,6 +389,7 @@ static void __noreturn init_warm_startup(struct sbi_scratch *scratch,
 	count = sbi_scratch_offset_ptr(scratch, entry_count_offset);
 	(*count)++;
 
+	/* Note: This has to be first thing in warmboot init sequence */
 	rc = sbi_hsm_init(scratch, hartid, false);
 	if (rc)
 		sbi_hart_hang();
@@ -425,7 +402,15 @@ static void __noreturn init_warm_startup(struct sbi_scratch *scratch,
 	if (rc)
 		sbi_hart_hang();
 
+	rc = sbi_sse_init(scratch, false);
+	if (rc)
+		sbi_hart_hang();
+
 	rc = sbi_pmu_init(scratch, false);
+	if (rc)
+		sbi_hart_hang();
+
+	rc = sbi_dbtr_init(scratch, false);
 	if (rc)
 		sbi_hart_hang();
 
@@ -445,11 +430,19 @@ static void __noreturn init_warm_startup(struct sbi_scratch *scratch,
 	if (rc)
 		sbi_hart_hang();
 
-	rc = sbi_hart_pmp_configure(scratch);
+	rc = sbi_fwft_init(scratch, false);
 	if (rc)
 		sbi_hart_hang();
 
 	rc = sbi_platform_final_init(plat, false);
+	if (rc)
+		sbi_hart_hang();
+
+	/*
+	 * Configure PMP at last because if SMEPMP is detected,
+	 * M-mode access to the S/U space will be rescinded.
+	 */
+	rc = sbi_hart_pmp_configure(scratch);
 	if (rc)
 		sbi_hart_hang();
 
@@ -490,7 +483,7 @@ static void __noreturn init_warmboot(struct sbi_scratch *scratch, u32 hartid)
 	if (hstate == SBI_HSM_STATE_SUSPENDED) {
 		init_warm_resume(scratch, hartid);
 	} else {
-		sbi_ipi_raw_clear(hartid);
+		sbi_ipi_raw_clear(sbi_hartid_to_hartindex(hartid));
 		init_warm_startup(scratch, hartid);
 	}
 }
@@ -511,13 +504,19 @@ static atomic_t coldboot_lottery = ATOMIC_INITIALIZER(0);
  */
 void __noreturn sbi_init(struct sbi_scratch *scratch)
 {
+	u32 i, h;
+	bool hartid_valid		= false;
 	bool next_mode_supported	= false;
 	bool coldboot			= false;
 	u32 hartid			= current_hartid();
 	const struct sbi_platform *plat = sbi_platform_ptr(scratch);
 
-	if ((SBI_HARTMASK_MAX_BITS <= hartid) ||
-	    sbi_platform_hart_invalid(plat, hartid))
+	for (i = 0; i < plat->hart_count; i++) {
+		h = (plat->hart_index2id) ? plat->hart_index2id[i] : i;
+		if (h == hartid)
+			hartid_valid = true;
+	}
+	if (!hartid_valid)
 		sbi_hart_hang();
 
 	switch (scratch->next_mode) {
@@ -614,10 +613,12 @@ void __noreturn sbi_exit(struct sbi_scratch *scratch)
 	u32 hartid			= current_hartid();
 	const struct sbi_platform *plat = sbi_platform_ptr(scratch);
 
-	if (sbi_platform_hart_invalid(plat, hartid))
+	if (!sbi_hartid_valid(hartid))
 		sbi_hart_hang();
 
 	sbi_platform_early_exit(plat);
+
+	sbi_sse_exit(scratch);
 
 	sbi_pmu_exit(scratch);
 

@@ -44,6 +44,11 @@ struct sbi_hsm_data {
 	unsigned long suspend_type;
 	unsigned long saved_mie;
 	unsigned long saved_mip;
+	unsigned long saved_medeleg;
+	unsigned long saved_menvcfg;
+#if __riscv_xlen == 32
+	unsigned long saved_menvcfgh;
+#endif
 	atomic_t start_ticket;
 };
 
@@ -115,23 +120,22 @@ int sbi_hsm_hart_interruptible_mask(const struct sbi_domain *dom,
 {
 	int hstate;
 	ulong i, hmask, dmask;
-	ulong hend = sbi_scratch_last_hartid() + 1;
 
 	*out_hmask = 0;
-	if (hend <= hbase)
+	if (!sbi_hartid_valid(hbase))
 		return SBI_EINVAL;
-	if (BITS_PER_LONG < (hend - hbase))
-		hend = hbase + BITS_PER_LONG;
 
 	dmask = sbi_domain_get_assigned_hartmask(dom, hbase);
-	for (i = hbase; i < hend; i++) {
-		hmask = 1UL << (i - hbase);
-		if (dmask & hmask) {
-			hstate = __sbi_hsm_hart_get_state(i);
-			if (hstate == SBI_HSM_STATE_STARTED ||
-			    hstate == SBI_HSM_STATE_SUSPENDED)
-				*out_hmask |= hmask;
-		}
+	for (i = 0; i < BITS_PER_LONG; i++) {
+		hmask = 1UL << i;
+		if (!(dmask & hmask))
+			continue;
+
+		hstate = __sbi_hsm_hart_get_state(hbase + i);
+		if (hstate == SBI_HSM_STATE_STARTED ||
+		    hstate == SBI_HSM_STATE_SUSPENDED ||
+		    hstate == SBI_HSM_STATE_RESUME_PENDING)
+			*out_hmask |= hmask;
 	}
 
 	return 0;
@@ -249,15 +253,15 @@ int sbi_hsm_init(struct sbi_scratch *scratch, u32 hartid, bool cold_boot)
 			return SBI_ENOMEM;
 
 		/* Initialize hart state data for every hart */
-		for (i = 0; i <= sbi_scratch_last_hartid(); i++) {
-			rscratch = sbi_hartid_to_scratch(i);
+		for (i = 0; i <= sbi_scratch_last_hartindex(); i++) {
+			rscratch = sbi_hartindex_to_scratch(i);
 			if (!rscratch)
 				continue;
 
 			hdata = sbi_scratch_offset_ptr(rscratch,
 						       hart_data_offset);
 			ATOMIC_INIT(&hdata->state,
-				    (i == hartid) ?
+				    (sbi_hartindex_to_hartid(i) == hartid) ?
 				    SBI_HSM_STATE_START_PENDING :
 				    SBI_HSM_STATE_STOPPED);
 			ATOMIC_INIT(&hdata->start_ticket, 0);
@@ -356,11 +360,15 @@ int sbi_hsm_hart_start(struct sbi_scratch *scratch,
 	   (hsm_device_has_hart_secondary_boot() && !init_count)) {
 		rc = hsm_device_hart_start(hartid, scratch->warmboot_addr);
 	} else {
-		rc = sbi_ipi_raw_send(hartid);
+		rc = sbi_ipi_raw_send(sbi_hartid_to_hartindex(hartid));
 	}
 
 	if (!rc)
 		return 0;
+
+	/* If it fails to start, change hart state back to stop */
+	__sbi_hsm_hart_change_state(hdata, SBI_HSM_STATE_START_PENDING,
+				    SBI_HSM_STATE_STOPPED);
 err:
 	hsm_start_ticket_release(hdata);
 	return rc;
@@ -414,6 +422,13 @@ void __sbi_hsm_suspend_non_ret_save(struct sbi_scratch *scratch)
 
 	hdata->saved_mie = csr_read(CSR_MIE);
 	hdata->saved_mip = csr_read(CSR_MIP) & (MIP_SSIP | MIP_STIP);
+	hdata->saved_medeleg = csr_read(CSR_MEDELEG);
+	if (sbi_hart_priv_version(scratch) >= SBI_HART_PRIV_VER_1_12) {
+#if __riscv_xlen == 32
+		hdata->saved_menvcfgh = csr_read(CSR_MENVCFGH);
+#endif
+		hdata->saved_menvcfg = csr_read(CSR_MENVCFG);
+	}
 }
 
 static void __sbi_hsm_suspend_non_ret_restore(struct sbi_scratch *scratch)
@@ -421,6 +436,13 @@ static void __sbi_hsm_suspend_non_ret_restore(struct sbi_scratch *scratch)
 	struct sbi_hsm_data *hdata = sbi_scratch_offset_ptr(scratch,
 							    hart_data_offset);
 
+	if (sbi_hart_priv_version(scratch) >= SBI_HART_PRIV_VER_1_12) {
+		csr_write(CSR_MENVCFG, hdata->saved_menvcfg);
+#if __riscv_xlen == 32
+		csr_write(CSR_MENVCFGH, hdata->saved_menvcfgh);
+#endif
+	}
+	csr_write(CSR_MEDELEG, hdata->saved_medeleg);
 	csr_write(CSR_MIE, hdata->saved_mie);
 	csr_set(CSR_MIP, (hdata->saved_mip & (MIP_SSIP | MIP_STIP)));
 }

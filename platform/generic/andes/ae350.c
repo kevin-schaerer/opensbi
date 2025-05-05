@@ -8,6 +8,7 @@
  */
 
 #include <platform_override.h>
+#include <andes/andes_pmu.h>
 #include <sbi_utils/fdt/fdt_helper.h>
 #include <sbi_utils/fdt/fdt_fixup.h>
 #include <sbi_utils/sys/atcsmu.h>
@@ -17,23 +18,21 @@
 #include <sbi/sbi_hsm.h>
 #include <sbi/sbi_ipi.h>
 #include <sbi/sbi_init.h>
-#include <andes/andes45.h>
+#include <andes/andes.h>
 
 static struct smu_data smu = { 0 };
 extern void __ae350_enable_coherency_warmboot(void);
 extern void __ae350_disable_coherency(void);
 
-static __always_inline bool is_andes25(void)
-{
-	ulong marchid = csr_read(CSR_MARCHID);
-	return !!(EXTRACT_FIELD(marchid, CSR_MARCHID_MICROID) == 0xa25);
-}
-
 static int ae350_hart_start(u32 hartid, ulong saddr)
 {
-	/* Don't send wakeup command at boot-time */
-	if (!sbi_init_count(hartid) || (is_andes25() && hartid == 0))
-		return sbi_ipi_raw_send(hartid);
+	/*
+	 * Don't send wakeup command when:
+	 * 1) boot-time
+	 * 2) the target hart is non-sleepable 25-series hart0
+	 */
+	if (!sbi_init_count(hartid) || (is_andes(25) && hartid == 0))
+		return sbi_ipi_raw_send(sbi_hartid_to_hartindex(hartid));
 
 	/* Write wakeup command to the sleep hart */
 	smu_set_command(&smu, WAKEUP_CMD, hartid);
@@ -51,7 +50,7 @@ static int ae350_hart_stop(void)
 	 * L2-cache, instead of turning it off, it should fall
 	 * through and jump to warmboot_addr.
 	 */
-	if (is_andes25() && hartid == 0)
+	if (is_andes(25) && hartid == 0)
 		return SBI_ENOTSUPP;
 
 	if (!smu_support_sleep_mode(&smu, DEEPSLEEP_MODE, hartid))
@@ -66,8 +65,9 @@ static int ae350_hart_stop(void)
 	smu_set_wakeup_events(&smu, 0x0, hartid);
 	smu_set_command(&smu, DEEP_SLEEP_CMD, hartid);
 
-	rc = smu_set_reset_vector(&smu, (ulong)__ae350_enable_coherency_warmboot,
-			       hartid);
+	rc = smu_set_reset_vector(&smu,
+				  (ulong)__ae350_enable_coherency_warmboot,
+				  hartid);
 	if (rc)
 		goto fail;
 
@@ -118,4 +118,6 @@ static const struct fdt_match andes_ae350_match[] = {
 const struct platform_override andes_ae350 = {
 	.match_table = andes_ae350_match,
 	.final_init  = ae350_final_init,
+	.extensions_init = andes_pmu_extensions_init,
+	.pmu_init = andes_pmu_init,
 };
