@@ -11,6 +11,7 @@
 #define __SBI_HART_H__
 
 #include <sbi/sbi_types.h>
+#include <sbi/sbi_bitops.h>
 
 /** Possible privileged specification versions of a hart */
 enum sbi_hart_priv_versions {
@@ -28,6 +29,8 @@ enum sbi_hart_priv_versions {
 enum sbi_hart_extensions {
 	/** HART has AIA M-mode CSRs */
 	SBI_HART_EXT_SMAIA = 0,
+	/** HART has Smepmp */
+	SBI_HART_EXT_SMEPMP,
 	/** HART has Smstateen CSR **/
 	SBI_HART_EXT_SMSTATEEN,
 	/** Hart has Sscofpmt extension */
@@ -38,19 +41,75 @@ enum sbi_hart_extensions {
 	SBI_HART_EXT_ZICNTR,
 	/** HART has Zihpm extension */
 	SBI_HART_EXT_ZIHPM,
+	/** HART has Zkr extension */
+	SBI_HART_EXT_ZKR,
+	/** Hart has Smcntrpmf extension */
+	SBI_HART_EXT_SMCNTRPMF,
+	/** Hart has Xandespmu extension */
+	SBI_HART_EXT_XANDESPMU,
+	/** Hart has Zicboz extension */
+	SBI_HART_EXT_ZICBOZ,
+	/** Hart has Zicbom extension */
+	SBI_HART_EXT_ZICBOM,
+	/** Hart has Svpbmt extension */
+	SBI_HART_EXT_SVPBMT,
+	/** Hart has debug trigger extension */
+	SBI_HART_EXT_SDTRIG,
+	/** Hart has Smcsrind extension */
+	SBI_HART_EXT_SMCSRIND,
+	/** Hart has Smcdeleg extension */
+	SBI_HART_EXT_SMCDELEG,
+	/** Hart has Sscsrind extension */
+	SBI_HART_EXT_SSCSRIND,
+	/** Hart has Ssccfg extension */
+	SBI_HART_EXT_SSCCFG,
+	/** Hart has Svade extension */
+	SBI_HART_EXT_SVADE,
+	/** Hart has Svadu extension */
+	SBI_HART_EXT_SVADU,
+	/** Hart has Smnpm extension */
+	SBI_HART_EXT_SMNPM,
+	/** HART has zicfilp extension */
+	SBI_HART_EXT_ZICFILP,
+	/** HART has zicfiss extension */
+	SBI_HART_EXT_ZICFISS,
+	/** Hart has Ssdbltrp extension */
+	SBI_HART_EXT_SSDBLTRP,
 
 	/** Maximum index of Hart extension */
 	SBI_HART_EXT_MAX,
 };
 
+struct sbi_hart_ext_data {
+	const unsigned int id;
+	const char *name;
+};
+
+extern const struct sbi_hart_ext_data sbi_hart_ext[];
+
+/*
+ * Smepmp enforces access boundaries between M-mode and
+ * S/U-mode. When it is enabled, the PMPs are programmed
+ * such that M-mode doesn't have access to S/U-mode memory.
+ *
+ * To give M-mode R/W access to the shared memory between M and
+ * S/U-mode, first entry is reserved. It is disabled at boot.
+ * When shared memory access is required, the physical address
+ * should be programmed into the first PMP entry with R/W
+ * permissions to the M-mode. Once the work is done, it should be
+ * unmapped. sbi_hart_map_saddr/sbi_hart_unmap_saddr function
+ * pair should be used to map/unmap the shared memory.
+ */
+#define SBI_SMEPMP_RESV_ENTRY		0
+
 struct sbi_hart_features {
 	bool detected;
 	int priv_version;
-	unsigned long extensions;
+	unsigned long extensions[BITS_TO_LONGS(SBI_HART_EXT_MAX)];
 	unsigned int pmp_count;
 	unsigned int pmp_addr_bits;
-	unsigned long pmp_gran;
-	unsigned int mhpm_count;
+	unsigned int pmp_log2gran;
+	unsigned int mhpm_mask;
 	unsigned int mhpm_bits;
 };
 
@@ -65,14 +124,16 @@ static inline ulong sbi_hart_expected_trap_addr(void)
 	return (ulong)sbi_hart_expected_trap;
 }
 
-unsigned int sbi_hart_mhpm_count(struct sbi_scratch *scratch);
+unsigned int sbi_hart_mhpm_mask(struct sbi_scratch *scratch);
 void sbi_hart_delegation_dump(struct sbi_scratch *scratch,
 			      const char *prefix, const char *suffix);
 unsigned int sbi_hart_pmp_count(struct sbi_scratch *scratch);
-unsigned long sbi_hart_pmp_granularity(struct sbi_scratch *scratch);
+unsigned int sbi_hart_pmp_log2gran(struct sbi_scratch *scratch);
 unsigned int sbi_hart_pmp_addrbits(struct sbi_scratch *scratch);
 unsigned int sbi_hart_mhpm_bits(struct sbi_scratch *scratch);
 int sbi_hart_pmp_configure(struct sbi_scratch *scratch);
+int sbi_hart_map_saddr(unsigned long base, unsigned long size);
+int sbi_hart_unmap_saddr(void);
 int sbi_hart_priv_version(struct sbi_scratch *scratch);
 void sbi_hart_get_priv_version_str(struct sbi_scratch *scratch,
 				   char *version_str, int nvstr);

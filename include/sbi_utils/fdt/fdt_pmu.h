@@ -13,6 +13,23 @@
 
 #include <sbi/sbi_types.h>
 
+struct fdt_pmu_hw_event_select_map {
+	uint32_t eidx;
+	uint64_t select;
+};
+
+struct fdt_pmu_hw_event_counter_map {
+	uint32_t eidx_start;
+	uint32_t eidx_end;
+	uint32_t ctr_map;
+};
+
+struct fdt_pmu_raw_event_counter_map {
+	uint64_t select;
+	uint64_t select_mask;
+	uint32_t ctr_map;
+};
+
 #ifdef CONFIG_FDT_PMU
 
 /**
@@ -26,7 +43,7 @@
  *
  * @param fdt device tree blob
  */
-void fdt_pmu_fixup(void *fdt);
+int fdt_pmu_fixup(void *fdt);
 
 /**
  * Setup PMU data from device tree
@@ -35,7 +52,7 @@ void fdt_pmu_fixup(void *fdt);
  *
  * @return 0 on success and negative error code on failure
  */
-int fdt_pmu_setup(void *fdt);
+int fdt_pmu_setup(const void *fdt);
 
 /**
  * Get the mhpmevent select value read from DT for a given event
@@ -45,10 +62,15 @@ int fdt_pmu_setup(void *fdt);
  */
 uint64_t fdt_pmu_get_select_value(uint32_t event_idx);
 
+/** The event index to selector value table instance */
+extern struct fdt_pmu_hw_event_select_map fdt_pmu_evt_select[];
+/** The number of valid entries in fdt_pmu_evt_select[] */
+extern uint32_t hw_event_count;
+
 #else
 
 static inline void fdt_pmu_fixup(void *fdt) { }
-static inline int fdt_pmu_setup(void *fdt) { return 0; }
+static inline int fdt_pmu_setup(const void *fdt) { return 0; }
 static inline uint64_t fdt_pmu_get_select_value(uint32_t event_idx) { return 0; }
 
 #endif

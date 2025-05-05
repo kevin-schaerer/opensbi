@@ -9,6 +9,7 @@
 
 #include <sbi/riscv_locks.h>
 #include <sbi/sbi_console.h>
+#include <sbi/sbi_fifo.h>
 #include <sbi/sbi_hart.h>
 #include <sbi/sbi_platform.h>
 #include <sbi/sbi_scratch.h>
@@ -20,6 +21,15 @@ static const struct sbi_console_device *console_dev = NULL;
 static char console_tbuf[CONSOLE_TBUF_MAX];
 static u32 console_tbuf_len;
 static spinlock_t console_out_lock	       = SPIN_LOCK_INITIALIZER;
+
+#ifdef CONFIG_CONSOLE_EARLY_BUFFER_SIZE
+#define CONSOLE_EARLY_BUFFER_SIZE	CONFIG_CONSOLE_EARLY_BUFFER_SIZE
+#else
+#define CONSOLE_EARLY_BUFFER_SIZE	256
+#endif
+static char console_early_buffer[CONSOLE_EARLY_BUFFER_SIZE] = { 0 };
+static SBI_FIFO_DEFINE(console_early_fifo, console_early_buffer, \
+		       CONSOLE_EARLY_BUFFER_SIZE, sizeof(char));
 
 bool sbi_isprintable(char c)
 {
@@ -37,28 +47,28 @@ int sbi_getc(void)
 	return -1;
 }
 
-void sbi_putc(char ch)
-{
-	if (console_dev && console_dev->console_putc) {
-		if (ch == '\n')
-			console_dev->console_putc('\r');
-		console_dev->console_putc(ch);
-	}
-}
-
 static unsigned long nputs(const char *str, unsigned long len)
 {
-	unsigned long i, ret;
+	char ch;
+	unsigned long i;
 
-	if (console_dev && console_dev->console_puts) {
-		ret = console_dev->console_puts(str, len);
+	if (console_dev) {
+		if (console_dev->console_puts)
+			return console_dev->console_puts(str, len);
+		else if (console_dev->console_putc) {
+			for (i = 0; i < len; i++) {
+				if (str[i] == '\n')
+					console_dev->console_putc('\r');
+				console_dev->console_putc(str[i]);
+			}
+		}
 	} else {
-		for (i = 0; i < len; i++)
-			sbi_putc(str[i]);
-		ret = len;
+		for (i = 0; i < len; i++) {
+			ch = str[i];
+			sbi_fifo_enqueue(&console_early_fifo, &ch, true);
+		}
 	}
-
-	return ret;
+	return len;
 }
 
 static void nputs_all(const char *str, unsigned long len)
@@ -67,6 +77,11 @@ static void nputs_all(const char *str, unsigned long len)
 
 	while (p < len)
 		p += nputs(&str[p], len - p);
+}
+
+void sbi_putc(char ch)
+{
+	nputs_all(&ch, 1);
 }
 
 void sbi_puts(const char *str)
@@ -473,19 +488,19 @@ const struct sbi_console_device *sbi_console_get_device(void)
 
 void sbi_console_set_device(const struct sbi_console_device *dev)
 {
-	if (!dev || console_dev)
+	char ch;
+	bool flush_early_fifo = false;
+
+	if (!dev)
 		return;
 
+	if (!console_dev)
+		flush_early_fifo = true;
+
 	console_dev = dev;
-}
 
-int sbi_console_init(struct sbi_scratch *scratch)
-{
-	int rc = sbi_platform_console_init(sbi_platform_ptr(scratch));
-
-	/* console is not a necessary device */
-	if (rc == SBI_ENODEV)
-		return 0;
-
-	return rc;
+	if (flush_early_fifo) {
+		while (!sbi_fifo_dequeue(&console_early_fifo, &ch))
+			sbi_putc(ch);
+	}
 }

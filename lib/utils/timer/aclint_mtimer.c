@@ -72,13 +72,9 @@ static u64 mtimer_value(void)
 static void mtimer_event_stop(void)
 {
 	u32 target_hart = current_hartid();
-	struct sbi_scratch *scratch;
+	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
 	struct aclint_mtimer_data *mt;
 	u64 *time_cmp;
-
-	scratch = sbi_hartid_to_scratch(target_hart);
-	if (!scratch)
-		return;
 
 	mt = mtimer_get_hart_data_ptr(scratch);
 	if (!mt)
@@ -92,13 +88,9 @@ static void mtimer_event_stop(void)
 static void mtimer_event_start(u64 next_event)
 {
 	u32 target_hart = current_hartid();
-	struct sbi_scratch *scratch;
+	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
 	struct aclint_mtimer_data *mt;
 	u64 *time_cmp;
-
-	scratch = sbi_hartid_to_scratch(target_hart);
-	if (!scratch)
-		return;
 
 	mt = mtimer_get_hart_data_ptr(scratch);
 	if (!mt)
@@ -151,16 +143,12 @@ void aclint_mtimer_set_reference(struct aclint_mtimer_data *mt,
 	mt->time_delta_computed = 0;
 }
 
-int aclint_mtimer_warm_init(void)
+static int aclint_mtimer_warm_init(void)
 {
 	u64 *mt_time_cmp;
 	u32 target_hart = current_hartid();
-	struct sbi_scratch *scratch;
+	struct sbi_scratch *scratch = sbi_scratch_thishart_ptr();
 	struct aclint_mtimer_data *mt;
-
-	scratch = sbi_hartid_to_scratch(target_hart);
-	if (!scratch)
-		return SBI_ENOENT;
 
 	mt = mtimer_get_hart_data_ptr(scratch);
 	if (!mt)
@@ -272,6 +260,7 @@ int aclint_mtimer_cold_init(struct aclint_mtimer_data *mt,
 	}
 
 	mtimer.timer_freq = mt->mtime_freq;
+	mtimer.warm_init = aclint_mtimer_warm_init;
 	sbi_timer_set_device(&mtimer);
 
 	return 0;
