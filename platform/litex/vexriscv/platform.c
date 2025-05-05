@@ -79,7 +79,7 @@ static int vex_final_init(bool cold_boot)
 	if (!cold_boot)
 		return 0;
 
-	fdt = fdt_get_address();
+	fdt = fdt_get_address_rw();
 	fdt_fixups(fdt);
 
 	return 0;
@@ -88,50 +88,25 @@ static int vex_final_init(bool cold_boot)
 /*
  * Initialize the vexRiscv interrupt controller for current HART.
  */
-static int vex_irqchip_init(bool cold_boot)
+static int vex_irqchip_init(void)
 {
-	int rc;
-	u32 hartid = current_hartid();
-
-	if (cold_boot) {
-		rc = plic_cold_irqchip_init(&plic);
-		if (rc)
-			return rc;
-	}
-
-	return plic_warm_irqchip_init(&plic, hartid * 2, hartid * 2 + 1);
-
+	return plic_cold_irqchip_init(&plic);
 }
 
 /*
  * Initialize IPI for current HART.
  */
-static int vex_ipi_init(bool cold_boot)
+static int vex_ipi_init(void)
 {
-	int rc;
-
-	if (cold_boot) {
-		rc = aclint_mswi_cold_init(&mswi);
-		if (rc)
-			return rc;
-	}
-
-	return aclint_mswi_warm_init();
+	return aclint_mswi_cold_init(&mswi);
 }
 
 /*
  * Initialize vexRiscv timer for current HART.
  */
-static int vex_timer_init(bool cold_boot)
+static int vex_timer_init(void)
 {
-	int rc;
-	if (cold_boot) {
-		rc = aclint_mtimer_cold_init(&mtimer, NULL); /* Timer has no reference */
-		if (rc)
-			return rc;
-	}
-
-	return aclint_mtimer_warm_init();
+	return aclint_mtimer_cold_init(&mtimer, NULL); /* Timer has no reference */
 }
 
 /*
